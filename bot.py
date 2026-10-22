@@ -50,8 +50,8 @@ def _chat_id(value):
 
 # ID группы модераторов и канала берутся из переменных окружения,
 # чтобы НЕ слетали после перезапуска/сна Render.
-ADMIN_CHAT_ID = _chat_id(os.environ.get("ADMIN_CHAT_ID"))
-CHANNEL_ID = _chat_id(os.environ.get("CHANNEL_ID"))
+ADMIN_CHAT_ID = _chat_id(os.environ.get("ADMIN_CHAT_ID") or "-5419016833")
+CHANNEL_ID = _chat_id(os.environ.get("CHANNEL_ID") or "@PodBladeBall2")
 
 SECRET = hashlib.sha256((os.environ.get("SECRET_KEY") or TOKEN).encode()).digest()
 WEBHOOK_SECRET = hashlib.sha256(b"webhook:" + SECRET).hexdigest()[:48]
