@@ -58,7 +58,7 @@ WEBHOOK_SECRET = hashlib.sha256(b"webhook:" + SECRET).hexdigest()[:48]
 
 TITLE = "Blade Ball Anonymous"
 MAX_TEXT = 800          # лимит описания (подпись к фото в Telegram — максимум 1024)
-MIN_TEXT = 5
+MIN_TEXT = 2
 COOLDOWN = 30           # секунд между заявками от одного человека
 SEP = "━━━━━━━━━━━━━━"
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
@@ -113,7 +113,7 @@ CANCEL_ROW = [btn("❌ Отмена", "form:cancel")]
 
 def main_menu():
     return kb(
-        [btn("📝 Отправить жалобу", "form:report")],
+        [btn("✍️ Написать анонимно", "form:report")],
         [btn("ℹ️ Как это работает", "form:info")],
     )
 
@@ -122,12 +122,13 @@ def deep_link(payload):
     return f"https://t.me/{tg.bot.username}?start={payload}"
 
 
-def post_keyboard(post_id):
-    # Кнопки под каждым постом в канале — сразу открывают бота с формой.
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Отправить анонимно", url=deep_link("report"))],
-        [InlineKeyboardButton("💬 Ответить анонимно", url=deep_link(f"reply_{post_id}"))],
-    ])
+def post_footer(post_id):
+    # Ссылки внизу каждого поста — сразу открывают бота с формой.
+    return (
+        "\n\n"
+        f"✍️ Написать анонимно — <a href=\"{deep_link('report')}\">@{tg.bot.username}</a>\n"
+        f"💬 <a href=\"{deep_link(f'reply_{post_id}')}\">Ответить анонимно</a>"
+    )
 
 
 # ─────────────────────────── ХЕЛПЕРЫ ───────────────────────────
@@ -197,18 +198,19 @@ async def roblox_user(username):
 
 
 def report_body(d):
+    body = "💬 <b>У тебя новое анонимное сообщение!</b>"
     r = d["roblox"]
-    return (
-        "🚨 <b>Анонимная жалоба</b>\n\n"
-        f"🎯 <b>Игрок:</b> <a href=\"{r['profile']}\">{escape(r['name'])}</a>\n\n"
-        f"📝 <b>Что произошло:</b>\n{escape(d['text'])}"
-    )
+    if r:
+        body += f"\n\n🎯 <b>Ник:</b> <a href=\"{r['profile']}\">{escape(r['name'])}</a>"
+    if d["text"]:
+        body += f"\n\n<blockquote>{escape(d['text'])}</blockquote>"
+    return body
 
 
 def reply_body(d):
-    body = "💬 <b>Анонимный ответ</b>"
+    body = "↩️ <b>Анонимный ответ</b>"
     if d["text"]:
-        body += f"\n\n{escape(d['text'])}"
+        body += f"\n\n<blockquote>{escape(d['text'])}</blockquote>"
     return body
 
 
@@ -225,9 +227,24 @@ async def start_report(uid):
     }
     await say(
         uid,
-        "🎯 <b>Шаг 1/3 — кто нарушил?</b>\n\n"
-        "Отправь ник игрока в Roblox.\n"
+        "🎯 <b>Шаг 1/3 — про кого?</b>\n\n"
+        "Отправь ник игрока в Roblox или нажми «Пропустить».\n"
         "<i>Например: Builderman</i>",
+        kb([btn("⏭ Пропустить", "form:skip_nick")], CANCEL_ROW),
+    )
+
+
+async def ask_text(uid, found=None):
+    d = sessions[uid]
+    d["step"] = "description"
+    head = ""
+    if found:
+        head = f"✅ Нашёл: <a href=\"{found['profile']}\">{escape(found['name'])}</a>\n\n"
+    await say(
+        uid,
+        f"{head}✍️ <b>Шаг 2/3 — сообщение</b>\n\n"
+        "Напиши, что хочешь сказать.\n"
+        "<i>Можно сразу отправить скриншот с подписью.</i>",
         kb(CANCEL_ROW),
     )
 
@@ -349,14 +366,25 @@ async def publish(src, reply_to):
         )
     else:
         post = await tg.bot.send_message(
-            CHANNEL_ID, body, parse_mode=ParseMode.HTML, reply_parameters=rp,
+            CHANNEL_ID, body, parse_mode=ParseMode.HTML,
+            reply_parameters=rp, link_preview_options=NO_PREVIEW,
         )
 
-    await tg.bot.edit_message_reply_markup(
-        chat_id=post.chat_id,
-        message_id=post.message_id,
-        reply_markup=post_keyboard(post.message_id),
-    )
+    # Ссылка «Ответить анонимно» знает номер поста только после отправки.
+    full = body + post_footer(post.message_id)
+    try:
+        if src.photo:
+            await tg.bot.edit_message_caption(
+                chat_id=post.chat_id, message_id=post.message_id,
+                caption=full, parse_mode=ParseMode.HTML,
+            )
+        else:
+            await tg.bot.edit_message_text(
+                full, chat_id=post.chat_id, message_id=post.message_id,
+                parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW,
+            )
+    except TelegramError:
+        log.exception("Не удалось добавить ссылки к посту")
     return post
 
 
@@ -441,7 +469,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await say(
         uid,
         f"👋 <b>{TITLE}</b>\n\n"
-        "Здесь можно анонимно пожаловаться на игрока.\n"
+        "Здесь можно анонимно написать в подслушку.\n"
         "Никто — ни модераторы, ни канал — не увидит, кто отправил.",
         main_menu(),
     )
@@ -477,7 +505,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
 
     # Убираем кнопки с нажатого сообщения, чтобы не жали по старым.
-    if data in ("form:skip_photo", "form:send", "form:restart", "form:cancel"):
+    if data in ("form:skip_nick", "form:skip_photo", "form:send", "form:restart", "form:cancel"):
         try:
             await q.edit_message_reply_markup(None)
         except TelegramError:
@@ -490,16 +518,22 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await say(
             uid,
             "ℹ️ <b>Как это работает</b>\n\n"
-            "1. Указываешь ник игрока в Roblox\n"
-            "2. Описываешь, что произошло\n"
+            "1. Указываешь ник игрока в Roblox (можно пропустить)\n"
+            "2. Пишешь сообщение\n"
             "3. По желанию — скриншот\n"
             "4. Заявку проверяет модератор\n"
             "5. Если одобрят — она появится в канале\n\n"
             "🕶 Твоё имя никто не увидит.\n"
-            "Под каждым постом в канале есть кнопки — "
-            "по ним бот сразу открывается с формой.",
+            "Под каждым постом есть ссылки «Написать анонимно» и "
+            "«Ответить анонимно» — по ним бот сразу открывается с формой.",
             main_menu(),
         )
+
+    elif data == "form:skip_nick":
+        d = sessions.get(uid)
+        if d and d["step"] == "username":
+            d["roblox"] = None
+            await ask_text(uid)
 
     elif data == "form:skip_photo":
         d = sessions.get(uid)
@@ -528,7 +562,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Человек просто написал боту — сразу показываем меню, без /start.
     if not d:
-        await say(uid, "Хочешь отправить анонимную жалобу? 👇", main_menu())
+        await say(uid, "Хочешь написать анонимно? 👇", main_menu())
         return
 
     step = d["step"]
@@ -539,8 +573,8 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await say(
                 uid,
                 "❌ Ник в Roblox — это 3–20 символов: латиница, цифры и «_».\n"
-                "Отправь ещё раз.",
-                kb(CANCEL_ROW),
+                "Отправь ещё раз или пропусти.",
+                kb([btn("⏭ Пропустить", "form:skip_nick")], CANCEL_ROW),
             )
             return
 
@@ -552,27 +586,19 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
         if roblox == "error":
-            await say(uid, "⚠️ Roblox сейчас не отвечает. Отправь ник ещё раз через минуту.", kb(CANCEL_ROW))
+            await say(uid, "⚠️ Roblox сейчас не отвечает. Отправь ник ещё раз или пропусти.", kb([btn("⏭ Пропустить", "form:skip_nick")], CANCEL_ROW))
             return
         if not roblox:
-            await say(uid, "❌ Такой игрок не найден. Проверь написание и отправь ещё раз.", kb(CANCEL_ROW))
+            await say(uid, "❌ Такой игрок не найден. Проверь написание или пропусти.", kb([btn("⏭ Пропустить", "form:skip_nick")], CANCEL_ROW))
             return
 
         d["roblox"] = roblox
-        d["step"] = "description"
-        await say(
-            uid,
-            f"✅ Нашёл: <a href=\"{roblox['profile']}\">{escape(roblox['name'])}</a>\n\n"
-            "📝 <b>Шаг 2/3 — что произошло?</b>\n\n"
-            "Опиши подробно: когда, где и что сделал игрок.\n"
-            "<i>Можно сразу отправить скриншот с подписью.</i>",
-            kb(CANCEL_ROW),
-        )
+        await ask_text(uid, roblox)
 
     elif step in ("description", "text"):
         min_len = MIN_TEXT if step == "description" else 1
         if len(text) < min_len:
-            await say(uid, "❌ Опиши подробнее.", kb(CANCEL_ROW))
+            await say(uid, "❌ Напиши чуть подробнее.", kb(CANCEL_ROW))
             return
         if len(text) > MAX_TEXT:
             await say(uid, f"❌ Слишком длинно: {len(text)}/{MAX_TEXT} символов. Сократи.", kb(CANCEL_ROW))
@@ -609,7 +635,7 @@ async def on_private_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = sessions.get(uid)
 
     if not d:
-        await say(uid, "Чтобы отправить скриншот, сначала начни жалобу 👇", main_menu())
+        await say(uid, "Чтобы отправить скриншот, сначала нажми «Написать анонимно» 👇", main_menu())
         return
 
     if caption and len(caption) > MAX_TEXT:
@@ -624,8 +650,7 @@ async def on_private_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if d["step"] == "username":
-        await say(uid, "Сначала отправь ник игрока текстом 🙂", kb(CANCEL_ROW))
-        return
+        d["step"] = "description"   # ник пропущен
 
     d["photo"] = photo
 
@@ -634,7 +659,7 @@ async def on_private_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             d["text"] = caption
             await show_confirm(uid)
         else:
-            await say(uid, "📸 Скриншот сохранил! Теперь опиши текстом, что произошло.", kb(CANCEL_ROW))
+            await say(uid, "📸 Скриншот сохранил! Теперь напиши текст сообщения.", kb(CANCEL_ROW))
         return
 
     await show_confirm(uid)
@@ -744,7 +769,7 @@ async def cmd_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🕶 Никто не узнает, кто отправил.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📝 Отправить анонимно", url=deep_link("report"))]
+                [InlineKeyboardButton("✍️ Написать анонимно", url=deep_link("report"))]
             ]),
         )
         try:
@@ -797,7 +822,7 @@ async def setup_bot_profile():
     try:
         await tg.bot.set_my_commands(
             [
-                BotCommand("report", "Отправить анонимную жалобу"),
+                BotCommand("report", "Написать анонимно"),
                 BotCommand("cancel", "Отменить"),
             ],
             scope=BotCommandScopeAllPrivateChats(),
