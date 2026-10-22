@@ -652,6 +652,10 @@ async def on_private_other(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ADMIN_CHAT_ID
+    # Защита: /setup работает только в уже настроенной админ-группе.
+    # Чужой человек не сможет добавить бота к себе и перехватить заявки.
+    if ADMIN_CHAT_ID is not None and update.effective_chat.id != ADMIN_CHAT_ID:
+        return
     if not await is_group_admin(update):
         await update.message.reply_text("❌ Только администратор группы может это сделать.")
         return
@@ -753,7 +757,7 @@ async def cmd_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update):
+    if update.effective_chat.id != ADMIN_CHAT_ID or not await is_group_admin(update):
         return
     ch = await get_channel()
     await update.message.reply_text(
