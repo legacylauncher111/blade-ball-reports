@@ -1,4 +1,5 @@
 import os
+import asyncio
 import re
 import time
 import hmac
@@ -9,6 +10,8 @@ import logging
 import secrets
 from html import escape
 from contextlib import asynccontextmanager
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, Request, Response
@@ -63,6 +66,12 @@ COOLDOWN = 30           # секунд между заявками от одно
 SEP = "━━━━━━━━━━━━━━"
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+
+# Дневной режим: в эти часы бот не засыпает, ночью спит и просыпается,
+# только когда кто-то напишет (экономия часов Render).
+TZ = ZoneInfo("Europe/Moscow")
+ACTIVE_FROM = 9   # с 09:00
+ACTIVE_TO = 1     # до 01:00 ночи
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
@@ -841,6 +850,30 @@ async def setup_bot_profile():
         log.exception("Не удалось обновить профиль бота")
 
 
+def is_daytime():
+    h = datetime.now(TZ).hour
+    if ACTIVE_FROM < ACTIVE_TO:
+        return ACTIVE_FROM <= h < ACTIVE_TO
+    return h >= ACTIVE_FROM or h < ACTIVE_TO
+
+
+async def keep_alive():
+    # Render (free) засыпает через 15 минут без ВХОДЯЩИХ запросов.
+    # Днём бот сам стучится на свой адрес каждые 10 минут, чтобы не уснуть.
+    # Ночью не стучится — сервер засыпает и экономит часы.
+    if not WEBHOOK_URL:
+        return
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            await asyncio.sleep(600)
+            if not is_daytime():
+                continue
+            try:
+                await client.get(f"{WEBHOOK_URL}/")
+            except Exception:
+                log.warning("keep-alive ping не прошёл")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await tg.initialize()
@@ -852,7 +885,9 @@ async def lifespan(_: FastAPI):
             allowed_updates=["message", "callback_query"],
         )
     await tg.start()
+    pinger = asyncio.create_task(keep_alive())
     yield
+    pinger.cancel()
     await tg.stop()
     await tg.shutdown()
 
